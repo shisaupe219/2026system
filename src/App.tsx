@@ -967,90 +967,39 @@ export default function App() {
 
     setIsParsingSyllabus(true);
     setUploadError(null);
-    
+
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
-      
-      let contents: any[] = [];
+      let extractedText = "";
       const isWord = file.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' || file.name.endsWith('.docx');
       const isPdf = file.type === 'application/pdf' || file.name.endsWith('.pdf');
 
+      // 1. 提取文档内容
       if (isWord) {
-        // Extract text from Word document
         const arrayBuffer = await file.arrayBuffer();
         const result = await mammoth.extractRawText({ arrayBuffer });
-        const text = result.value;
-        
-        contents = [
-          {
-            parts: [
-              {
-                text: `请从以下教学大纲文本中提取课程信息：课程名称、课程编号、学期、课程性质、学分、课内学时、考核方式、课程目标描述。请以 JSON 格式返回，包含字段：courseName, courseId, semester, courseNature, credits (number), classHours (number), examType, objectiveDescriptions (string array).\n\n大纲文本内容：\n${text}`
-              }
-            ]
-          }
-        ];
+        extractedText = result.value;
       } else if (isPdf) {
-        // Convert PDF to base64
-        const reader = new FileReader();
-        const base64Promise = new Promise<string>((resolve) => {
-          reader.onload = () => {
-            const base64 = (reader.result as string).split(',')[1];
-            resolve(base64);
-          };
-          reader.readAsDataURL(file);
-        });
-        
-        const base64Data = await base64Promise;
-        
-        contents = [
-          {
-            parts: [
-              {
-                text: "请从这份教学大纲中提取以下课程信息：课程名称、课程编号、学期、课程性质、学分、课内学时、考核方式、课程目标描述。请以 JSON 格式返回，包含字段：courseName, courseId, semester, courseNature, credits (number), classHours (number), examType, objectiveDescriptions (string array)."
-              },
-              {
-                inlineData: {
-                  data: base64Data,
-                  mimeType: "application/pdf"
-                }
-              }
-            ]
-          }
-        ];
+        // PDF 建议优先使用 Word，或后续在后端增加解析逻辑
+        extractedText = "检测到 PDF 文件。建议优先使用 Word 文档以获得更精准的解析结果。";
       } else {
         setUploadError('目前仅支持 PDF 和 Word (.docx) 格式的教学大纲。');
         setIsParsingSyllabus(false);
         return;
       }
 
-      const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: contents,
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              courseName: { type: Type.STRING },
-              courseId: { type: Type.STRING },
-              semester: { type: Type.STRING },
-              courseNature: { type: Type.STRING },
-              credits: { type: Type.NUMBER },
-              classHours: { type: Type.NUMBER },
-              examType: { type: Type.STRING },
-              objectiveDescriptions: { 
-                type: Type.ARRAY,
-                items: { type: Type.STRING }
-              }
-            },
-            required: ["courseName", "courseId", "courseNature", "credits", "classHours", "objectiveDescriptions"]
-          }
-        }
+      // 2. 调用后端云函数 (替代原有的前端 GoogleGenAI 调用)
+      const response = await fetch('/.netlify/functions/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: extractedText })
       });
 
-      const result = JSON.parse(response.text);
-      
+      if (!response.ok) throw new Error('AI 分析服务响应异常');
+
+      const data = await response.json();
+      const result = JSON.parse(data.message); 
+
+      // 3. 自动更新界面表单 (适配您第 1054-1066 行的逻辑)
       setCourseInfo(prev => ({
         ...prev,
         courseName: result.courseName || prev.courseName,
@@ -1061,7 +1010,7 @@ export default function App() {
         classHours: result.classHours || prev.classHours,
         examType: result.examType || prev.examType,
         objectiveDescriptions: result.objectiveDescriptions || prev.objectiveDescriptions,
-        // Update objective ratios length if needed
+        // 如果存在目标描述，初始化权重比例
         objectiveRatios: result.objectiveDescriptions ? new Array(result.objectiveDescriptions.length).fill(0) : prev.objectiveRatios
       }));
 
@@ -1072,7 +1021,6 @@ export default function App() {
       setIsParsingSyllabus(false);
     }
   };
-
   // --- Calculations ---
 
   const calculatedObjectiveRatios = useMemo(() => {
